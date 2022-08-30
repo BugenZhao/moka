@@ -141,7 +141,7 @@ impl<K, V, C> CacheBuilder<K, V, C> {
     ///
     /// The closure should take `&K` and `&V` as the arguments and returns a `u32`
     /// representing the relative size of the entry.
-    pub fn weigher(self, weigher: impl FnMut(&K, &V) -> u32 + 'static + Send) -> Self {
+    pub fn weigher(self, weigher: impl FnMut(&K, &V) -> u32 + 'static + Send + Sync) -> Self {
         Self {
             weigher: Some(Box::new(weigher)),
             ..self

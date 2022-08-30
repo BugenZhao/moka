@@ -17,6 +17,7 @@ pub(crate) struct Deques<K> {
 // We need this `unsafe impl` as DeqNode have NonNull pointers, as we want the
 // `unsync::Cache` to be `Send` in this fork.
 unsafe impl<K> Send for Deques<K> {}
+unsafe impl<K> Sync for Deques<K> {}
 
 impl<K> Default for Deques<K> {
     fn default() -> Self {

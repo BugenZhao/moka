@@ -17,7 +17,7 @@ pub use iter::Iter;
 
 use crate::common::{deque::DeqNode, time::Instant};
 
-pub(crate) type Weigher<K, V> = Box<dyn FnMut(&K, &V) -> u32 + Send>;
+pub(crate) type Weigher<K, V> = Box<dyn FnMut(&K, &V) -> u32 + Send + Sync>;
 
 pub(crate) trait AccessTime {
     fn last_accessed(&self) -> Option<Instant>;
@@ -68,6 +68,7 @@ struct EntryInfo<K> {
 // We need this `unsafe impl` as DeqNode have NonNull pointers, as we want the
 // `unsync::Cache` to be `Send` in this fork.
 unsafe impl<K> Send for EntryInfo<K> {}
+unsafe impl<K> Sync for EntryInfo<K> {}
 
 pub(crate) struct ValueEntry<K, V> {
     pub(crate) value: V,
