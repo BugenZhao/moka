@@ -363,6 +363,23 @@ where
         }
     }
 
+    /// Updates the cache entry of the `key` with `update`. Returns `true` if the
+    /// entry previously existed.
+    pub fn update<Q, U>(&mut self, key: &Q, update: U) -> bool
+    where
+        Arc<K>: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+        U: FnOnce(&mut V),
+    {
+        if let Some((key, mut value)) = self.invalidate_entry(key) {
+            update(&mut value);
+            self.insert(key, value);
+            true
+        } else {
+            false
+        }
+    }
+
     pub(crate) fn is_expired_entry(&self, entry: &ValueEntry<K, V>) -> bool {
         let now = self.current_time_from_expiration_clock();
         Self::is_expired_entry_wo(&self.time_to_live, entry, now)
@@ -387,11 +404,11 @@ where
         }
     }
 
-    /// Discards any cached value for the key.
+    /// Discards any cached value for the key. Returns the entry if it existed.
     ///
     /// The key may be any borrowed form of the cache's key type, but `Hash` and `Eq`
     /// on the borrowed form _must_ match those for the key type.
-    pub fn invalidate<Q>(&mut self, key: &Q)
+    pub fn invalidate_entry<Q>(&mut self, key: &Q) -> Option<(K, V)>
     where
         Arc<K>: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
@@ -399,12 +416,30 @@ where
         self.evict_expired_if_needed();
         self.evict_lru_entries();
 
-        if let Some(mut entry) = self.cache.remove(key) {
+        if let Some((key, mut entry)) = self.cache.remove_entry(key) {
             let weight = entry.policy_weight();
             self.deques.unlink_ao(&mut entry);
             Deques::unlink_wo(&mut self.deques.write_order, &mut entry);
             self.saturating_sub_from_total_weight(weight as u64);
+            Some((
+                Arc::try_unwrap(key).unwrap_or_else(|_| unreachable!()),
+                entry.value,
+            ))
+        } else {
+            None
         }
+    }
+
+    /// Discards any cached value for the key. Returns the value if it existed.
+    ///
+    /// The key may be any borrowed form of the cache's key type, but `Hash` and `Eq`
+    /// on the borrowed form _must_ match those for the key type.
+    pub fn invalidate<Q>(&mut self, key: &Q) -> Option<V>
+    where
+        Arc<K>: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        self.invalidate_entry(key).map(|(_key, value)| value)
     }
 
     /// Discards all cached values.
