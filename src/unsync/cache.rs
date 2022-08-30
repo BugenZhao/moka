@@ -19,13 +19,13 @@ use std::{
     fmt,
     hash::{BuildHasher, Hash, Hasher},
     ptr::NonNull,
-    rc::Rc,
+    sync::Arc,
     time::Duration,
 };
 
 const EVICTION_BATCH_SIZE: usize = 100;
 
-type CacheStore<K, V, S> = std::collections::HashMap<Rc<K>, ValueEntry<K, V>, S>;
+type CacheStore<K, V, S> = std::collections::HashMap<Arc<K>, ValueEntry<K, V>, S>;
 
 /// An in-memory cache that is _not_ thread-safe.
 ///
@@ -309,7 +309,7 @@ where
     /// on the borrowed form _must_ match those for the key type.
     pub fn contains_key<Q>(&mut self, key: &Q) -> bool
     where
-        Rc<K>: Borrow<Q>,
+        Arc<K>: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
         let timestamp = self.evict_expired_if_needed();
@@ -334,7 +334,7 @@ where
     /// on the borrowed form _must_ match those for the key type.
     pub fn get<Q>(&mut self, key: &Q) -> Option<&V>
     where
-        Rc<K>: Borrow<Q>,
+        Arc<K>: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
         let timestamp = self.evict_expired_if_needed();
@@ -376,10 +376,10 @@ where
         let timestamp = self.evict_expired_if_needed();
         self.evict_lru_entries();
         let policy_weight = weigh(&mut self.weigher, &key, &value);
-        let key = Rc::new(key);
+        let key = Arc::new(key);
         let entry = ValueEntry::new(value, policy_weight);
 
-        if let Some(old_entry) = self.cache.insert(Rc::clone(&key), entry) {
+        if let Some(old_entry) = self.cache.insert(Arc::clone(&key), entry) {
             self.handle_update(key, timestamp, policy_weight, old_entry);
         } else {
             let hash = self.hash(&key);
@@ -393,7 +393,7 @@ where
     /// on the borrowed form _must_ match those for the key type.
     pub fn invalidate<Q>(&mut self, key: &Q)
     where
-        Rc<K>: Borrow<Q>,
+        Arc<K>: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
         self.evict_expired_if_needed();
@@ -443,7 +443,7 @@ where
         let keys_to_invalidate = cache
             .iter()
             .filter(|(key, entry)| (predicate)(key, &entry.value))
-            .map(|(key, _)| Rc::clone(key))
+            .map(|(key, _)| Arc::clone(key))
             .collect::<Vec<_>>();
 
         let mut invalidated = 0u64;
@@ -497,7 +497,7 @@ where
     #[inline]
     fn hash<Q>(&self, key: &Q) -> u64
     where
-        Rc<K>: Borrow<Q>,
+        Arc<K>: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
         let mut hasher = self.build_hasher.build_hasher();
@@ -631,7 +631,7 @@ where
     #[inline]
     fn handle_insert(
         &mut self,
-        key: Rc<K>,
+        key: Arc<K>,
         hash: u64,
         policy_weight: u32,
         timestamp: Option<Instant>,
@@ -641,11 +641,11 @@ where
 
         if has_free_space {
             // Add the candidate to the deque.
-            let key = Rc::clone(&key);
+            let key = Arc::clone(&key);
             let entry = cache.get_mut(&key).unwrap();
             deqs.push_back_ao(
                 CacheRegion::MainProbation,
-                KeyHashDate::new(Rc::clone(&key), hash, timestamp),
+                KeyHashDate::new(Arc::clone(&key), hash, timestamp),
                 entry,
             );
             if self.time_to_live.is_some() {
@@ -664,7 +664,7 @@ where
         if let Some(max) = self.max_capacity {
             if policy_weight as u64 > max {
                 // The candidate is too big to fit in the cache. Reject it.
-                cache.remove(&Rc::clone(&key));
+                cache.remove(&Arc::clone(&key));
                 return;
             }
         }
@@ -691,10 +691,10 @@ where
 
                 // Add the candidate to the deque.
                 let entry = cache.get_mut(&key).unwrap();
-                let key = Rc::clone(&key);
+                let key = Arc::clone(&key);
                 deqs.push_back_ao(
                     CacheRegion::MainProbation,
-                    KeyHashDate::new(Rc::clone(&key), hash, timestamp),
+                    KeyHashDate::new(Arc::clone(&key), hash, timestamp),
                     entry,
                 );
                 if self.time_to_live.is_some() {
@@ -784,7 +784,7 @@ where
 
     fn handle_update(
         &mut self,
-        key: Rc<K>,
+        key: Arc<K>,
         timestamp: Option<Instant>,
         policy_weight: u32,
         old_entry: ValueEntry<K, V>,
@@ -869,7 +869,7 @@ where
                 .peek_front()
                 .and_then(|node| {
                     if Self::is_expired_entry_ao(time_to_idle, node, now) {
-                        Some(Some(Rc::clone(&node.element.key)))
+                        Some(Some(Arc::clone(&node.element.key)))
                     } else {
                         None
                     }
@@ -910,7 +910,7 @@ where
                 .peek_front()
                 .and_then(|node| {
                     if Self::is_expired_entry_wo(time_to_live, node, now) {
-                        Some(Some(Rc::clone(&node.element.key)))
+                        Some(Some(Arc::clone(&node.element.key)))
                     } else {
                         None
                     }
@@ -957,7 +957,7 @@ where
 
                 let key = probation
                     .peek_front()
-                    .map(|node| Rc::clone(&node.element.key));
+                    .map(|node| Arc::clone(&node.element.key));
 
                 if key.is_none() {
                     break;

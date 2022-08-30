@@ -8,7 +8,7 @@ mod cache;
 mod deques;
 mod iter;
 
-use std::{ptr::NonNull, rc::Rc};
+use std::{ptr::NonNull, sync::Arc};
 use tagptr::TagNonNull;
 
 pub use builder::CacheBuilder;
@@ -17,7 +17,7 @@ pub use iter::Iter;
 
 use crate::common::{deque::DeqNode, time::Instant};
 
-pub(crate) type Weigher<K, V> = Box<dyn FnMut(&K, &V) -> u32>;
+pub(crate) type Weigher<K, V> = Box<dyn FnMut(&K, &V) -> u32 + Send>;
 
 pub(crate) trait AccessTime {
     fn last_accessed(&self) -> Option<Instant>;
@@ -27,24 +27,24 @@ pub(crate) trait AccessTime {
 }
 
 pub(crate) struct KeyDate<K> {
-    pub(crate) key: Rc<K>,
+    pub(crate) key: Arc<K>,
     pub(crate) timestamp: Option<Instant>,
 }
 
 impl<K> KeyDate<K> {
-    pub(crate) fn new(key: Rc<K>, timestamp: Option<Instant>) -> Self {
+    pub(crate) fn new(key: Arc<K>, timestamp: Option<Instant>) -> Self {
         Self { key, timestamp }
     }
 }
 
 pub(crate) struct KeyHashDate<K> {
-    pub(crate) key: Rc<K>,
+    pub(crate) key: Arc<K>,
     pub(crate) hash: u64,
     pub(crate) timestamp: Option<Instant>,
 }
 
 impl<K> KeyHashDate<K> {
-    pub(crate) fn new(key: Rc<K>, hash: u64, timestamp: Option<Instant>) -> Self {
+    pub(crate) fn new(key: Arc<K>, hash: u64, timestamp: Option<Instant>) -> Self {
         Self {
             key,
             hash,
@@ -64,6 +64,10 @@ struct EntryInfo<K> {
     write_order_q_node: Option<KeyDeqNodeWo<K>>,
     policy_weight: u32,
 }
+
+// We need this `unsafe impl` as DeqNode have NonNull pointers, as we want the
+// `unsync::Cache` to be `Send` in this fork.
+unsafe impl<K> Send for EntryInfo<K> {}
 
 pub(crate) struct ValueEntry<K, V> {
     pub(crate) value: V,

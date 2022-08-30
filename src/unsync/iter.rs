@@ -2,10 +2,10 @@ use super::{Cache, ValueEntry};
 
 use std::{
     hash::{BuildHasher, Hash},
-    rc::Rc,
+    sync::Arc,
 };
 
-type HashMapIter<'i, K, V> = std::collections::hash_map::Iter<'i, Rc<K>, ValueEntry<K, V>>;
+type HashMapIter<'i, K, V> = std::collections::hash_map::Iter<'i, Arc<K>, ValueEntry<K, V>>;
 
 pub struct Iter<'i, K, V, S> {
     cache: &'i Cache<K, V, S>,
