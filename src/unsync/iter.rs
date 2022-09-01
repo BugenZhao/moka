@@ -1,11 +1,8 @@
 use super::{Cache, ValueEntry};
 
-use std::{
-    hash::{BuildHasher, Hash},
-    sync::Arc,
-};
+use std::hash::{BuildHasher, Hash};
 
-type HashMapIter<'i, K, V> = std::collections::hash_map::Iter<'i, Arc<K>, ValueEntry<K, V>>;
+type HashMapIter<'i, K, V> = std::collections::hash_map::Iter<'i, Box<K>, ValueEntry<K, V>>;
 
 pub struct Iter<'i, K, V, S> {
     cache: &'i Cache<K, V, S>,

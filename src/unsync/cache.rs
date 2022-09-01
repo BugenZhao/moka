@@ -19,13 +19,12 @@ use std::{
     fmt,
     hash::{BuildHasher, Hash, Hasher},
     ptr::NonNull,
-    sync::Arc,
     time::Duration,
 };
 
 const EVICTION_BATCH_SIZE: usize = 100;
 
-type CacheStore<K, V, S> = std::collections::HashMap<Arc<K>, ValueEntry<K, V>, S>;
+type CacheStore<K, V, S> = std::collections::HashMap<Box<K>, ValueEntry<K, V>, S>;
 
 /// An in-memory cache that is _not_ thread-safe.
 ///
@@ -309,7 +308,7 @@ where
     /// on the borrowed form _must_ match those for the key type.
     pub fn contains_key<Q>(&mut self, key: &Q) -> bool
     where
-        Arc<K>: Borrow<Q>,
+        Box<K>: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
         let timestamp = self.evict_expired_if_needed();
@@ -334,7 +333,7 @@ where
     /// on the borrowed form _must_ match those for the key type.
     pub fn get<Q>(&mut self, key: &Q) -> Option<&V>
     where
-        Arc<K>: Borrow<Q>,
+        Box<K>: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
         let timestamp = self.evict_expired_if_needed();
@@ -367,7 +366,7 @@ where
     /// entry previously existed.
     pub fn update<Q, U>(&mut self, key: &Q, update: U) -> bool
     where
-        Arc<K>: Borrow<Q>,
+        Box<K>: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
         U: FnOnce(&mut V),
     {
@@ -393,14 +392,15 @@ where
         let timestamp = self.evict_expired_if_needed();
         self.evict_lru_entries();
         let policy_weight = weigh(&mut self.weigher, &key, &value);
-        let key = Arc::new(key);
+        let mut key = Box::new(key);
+        let key_ptr = unsafe { NonNull::new_unchecked(key.as_mut()) };
         let entry = ValueEntry::new(value, policy_weight);
 
-        if let Some(old_entry) = self.cache.insert(Arc::clone(&key), entry) {
-            self.handle_update(key, timestamp, policy_weight, old_entry);
+        if let Some(old_entry) = self.cache.insert(key, entry) {
+            self.handle_update(key_ptr, timestamp, policy_weight, old_entry);
         } else {
-            let hash = self.hash(&key);
-            self.handle_insert(key, hash, policy_weight, timestamp);
+            let hash = self.hash(unsafe { key_ptr.as_ref() });
+            self.handle_insert(key_ptr, hash, policy_weight, timestamp);
         }
     }
 
@@ -410,7 +410,7 @@ where
     /// on the borrowed form _must_ match those for the key type.
     pub fn invalidate_entry<Q>(&mut self, key: &Q) -> Option<(K, V)>
     where
-        Arc<K>: Borrow<Q>,
+        Box<K>: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
         self.evict_expired_if_needed();
@@ -421,10 +421,7 @@ where
             self.deques.unlink_ao(&mut entry);
             Deques::unlink_wo(&mut self.deques.write_order, &mut entry);
             self.saturating_sub_from_total_weight(weight as u64);
-            Some((
-                Arc::try_unwrap(key).unwrap_or_else(|_| unreachable!()),
-                entry.value,
-            ))
+            Some((*key, entry.value))
         } else {
             None
         }
@@ -436,7 +433,7 @@ where
     /// on the borrowed form _must_ match those for the key type.
     pub fn invalidate<Q>(&mut self, key: &Q) -> Option<V>
     where
-        Arc<K>: Borrow<Q>,
+        Box<K>: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
         self.invalidate_entry(key).map(|(_key, value)| value)
@@ -478,13 +475,13 @@ where
         let keys_to_invalidate = cache
             .iter()
             .filter(|(key, entry)| (predicate)(key, &entry.value))
-            .map(|(key, _)| Arc::clone(key))
+            .map(|(key, _)| unsafe { NonNull::new_unchecked(key.as_ref() as *const K as *mut K) })
             .collect::<Vec<_>>();
 
         let mut invalidated = 0u64;
 
         keys_to_invalidate.into_iter().for_each(|k| {
-            if let Some(mut entry) = cache.remove(&k) {
+            if let Some(mut entry) = cache.remove(unsafe { k.as_ref() }) {
                 let weight = entry.policy_weight();
                 deques.unlink_ao(&mut entry);
                 Deques::unlink_wo(&mut deques.write_order, &mut entry);
@@ -532,7 +529,7 @@ where
     #[inline]
     fn hash<Q>(&self, key: &Q) -> u64
     where
-        Arc<K>: Borrow<Q>,
+        Box<K>: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
         let mut hasher = self.build_hasher.build_hasher();
@@ -666,7 +663,7 @@ where
     #[inline]
     fn handle_insert(
         &mut self,
-        key: Arc<K>,
+        key: NonNull<K>,
         hash: u64,
         policy_weight: u32,
         timestamp: Option<Instant>,
@@ -676,11 +673,10 @@ where
 
         if has_free_space {
             // Add the candidate to the deque.
-            let key = Arc::clone(&key);
-            let entry = cache.get_mut(&key).unwrap();
+            let entry = cache.get_mut(unsafe { key.as_ref() }).unwrap();
             deqs.push_back_ao(
                 CacheRegion::MainProbation,
-                KeyHashDate::new(Arc::clone(&key), hash, timestamp),
+                KeyHashDate::new(key, hash, timestamp),
                 entry,
             );
             if self.time_to_live.is_some() {
@@ -699,7 +695,7 @@ where
         if let Some(max) = self.max_capacity {
             if policy_weight as u64 > max {
                 // The candidate is too big to fit in the cache. Reject it.
-                cache.remove(&Arc::clone(&key));
+                cache.remove(unsafe { key.as_ref() });
                 return;
             }
         }
@@ -716,7 +712,7 @@ where
                 for victim in victim_nodes {
                     // Remove the victim from the hash map.
                     let mut vic_entry = cache
-                        .remove(unsafe { &victim.as_ref().element.key })
+                        .remove(unsafe { victim.as_ref().element.key.as_ref() })
                         .expect("Cannot remove a victim from the hash map");
                     // And then remove the victim from the deques.
                     deqs.unlink_ao(&mut vic_entry);
@@ -725,11 +721,10 @@ where
                 }
 
                 // Add the candidate to the deque.
-                let entry = cache.get_mut(&key).unwrap();
-                let key = Arc::clone(&key);
+                let entry = cache.get_mut(unsafe { key.as_ref() }).unwrap();
                 deqs.push_back_ao(
                     CacheRegion::MainProbation,
-                    KeyHashDate::new(Arc::clone(&key), hash, timestamp),
+                    KeyHashDate::new(key, hash, timestamp),
                     entry,
                 );
                 if self.time_to_live.is_some() {
@@ -746,7 +741,7 @@ where
             }
             AdmissionResult::Rejected => {
                 // Remove the candidate from the cache.
-                cache.remove(&key);
+                cache.remove(unsafe { key.as_ref() });
             }
         }
     }
@@ -791,9 +786,13 @@ where
                 next_victim = victim.next_node();
 
                 let vic_entry = cache
-                    .get(&victim.element.key)
+                    .get(unsafe { victim.element.key.as_ref() })
                     .expect("Cannot get an victim entry");
-                victims.add_policy_weight(victim.element.key.as_ref(), &vic_entry.value, weigher);
+                victims.add_policy_weight(
+                    unsafe { victim.element.key.as_ref() },
+                    &vic_entry.value,
+                    weigher,
+                );
                 victims.add_frequency(freq, victim.element.hash);
                 victim_nodes.push(NonNull::from(victim));
             } else {
@@ -819,14 +818,14 @@ where
 
     fn handle_update(
         &mut self,
-        key: Arc<K>,
+        key: NonNull<K>,
         timestamp: Option<Instant>,
         policy_weight: u32,
         old_entry: ValueEntry<K, V>,
     ) {
         let old_policy_weight = old_entry.policy_weight();
 
-        let entry = self.cache.get_mut(&key).unwrap();
+        let entry = self.cache.get_mut(unsafe { key.as_ref() }).unwrap();
         entry.replace_deq_nodes_with(old_entry);
         if let Some(ts) = timestamp {
             entry.set_last_accessed(ts);
@@ -904,7 +903,7 @@ where
                 .peek_front()
                 .and_then(|node| {
                     if Self::is_expired_entry_ao(time_to_idle, node, now) {
-                        Some(Some(Arc::clone(&node.element.key)))
+                        Some(Some(node.element.key))
                     } else {
                         None
                     }
@@ -917,7 +916,7 @@ where
 
             let key = key.unwrap();
 
-            if let Some(mut entry) = cache.remove(&key) {
+            if let Some(mut entry) = cache.remove(unsafe { key.as_ref() }) {
                 let weight = entry.policy_weight();
                 Deques::unlink_ao_from_deque(deq_name, deq, &mut entry);
                 Deques::unlink_wo(write_order_deq, &mut entry);
@@ -945,7 +944,7 @@ where
                 .peek_front()
                 .and_then(|node| {
                     if Self::is_expired_entry_wo(time_to_live, node, now) {
-                        Some(Some(Arc::clone(&node.element.key)))
+                        Some(Some(node.element.key))
                     } else {
                         None
                     }
@@ -958,7 +957,7 @@ where
 
             let key = key.unwrap();
 
-            if let Some(mut entry) = self.cache.remove(&key) {
+            if let Some(mut entry) = self.cache.remove(unsafe { key.as_ref() }) {
                 let weight = entry.policy_weight();
                 self.deques.unlink_ao(&mut entry);
                 Deques::unlink_wo(&mut self.deques.write_order, &mut entry);
@@ -990,16 +989,14 @@ where
                     break;
                 }
 
-                let key = probation
-                    .peek_front()
-                    .map(|node| Arc::clone(&node.element.key));
+                let key = probation.peek_front().map(|node| node.element.key);
 
                 if key.is_none() {
                     break;
                 }
                 let key = key.unwrap();
 
-                if let Some(mut entry) = cache.remove(&key) {
+                if let Some(mut entry) = cache.remove(unsafe { key.as_ref() }) {
                     let weight = entry.policy_weight();
                     Deques::unlink_ao_from_deque(DEQ_NAME, probation, &mut entry);
                     Deques::unlink_wo(wo, &mut entry);

@@ -8,7 +8,7 @@ mod cache;
 mod deques;
 mod iter;
 
-use std::{ptr::NonNull, sync::Arc};
+use std::ptr::NonNull;
 use tagptr::TagNonNull;
 
 pub use builder::CacheBuilder;
@@ -27,24 +27,24 @@ pub(crate) trait AccessTime {
 }
 
 pub(crate) struct KeyDate<K> {
-    pub(crate) key: Arc<K>,
+    pub(crate) key: NonNull<K>,
     pub(crate) timestamp: Option<Instant>,
 }
 
 impl<K> KeyDate<K> {
-    pub(crate) fn new(key: Arc<K>, timestamp: Option<Instant>) -> Self {
+    pub(crate) fn new(key: NonNull<K>, timestamp: Option<Instant>) -> Self {
         Self { key, timestamp }
     }
 }
 
 pub(crate) struct KeyHashDate<K> {
-    pub(crate) key: Arc<K>,
+    pub(crate) key: NonNull<K>,
     pub(crate) hash: u64,
     pub(crate) timestamp: Option<Instant>,
 }
 
 impl<K> KeyHashDate<K> {
-    pub(crate) fn new(key: Arc<K>, hash: u64, timestamp: Option<Instant>) -> Self {
+    pub(crate) fn new(key: NonNull<K>, hash: u64, timestamp: Option<Instant>) -> Self {
         Self {
             key,
             hash,
